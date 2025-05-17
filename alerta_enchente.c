@@ -32,13 +32,15 @@
 #define endereco 0x3C
 #define ADC_JOYSTICK_X 26
 #define ADC_JOYSTICK_Y 27
+#define LED_RED 13
 #define LED_BLUE 12
-#define LED_GREEN  11
+#define LED_GREEN 11
 #define tam_quad 10
 
 #define MATRIZ_PIN 7            // Pino GPIO conectado aos LEDs WS2818B
 #define LED_COUNT 25            // Número de LEDs na matriz
 #define max_value_joy 4065.0 // (4081 - 16) que são os valores extremos máximos lidos pelo meu joystick
+#define BUZZER_A 21
 
 
 // Declaração de variáveis globais
@@ -47,24 +49,12 @@ uint sm;
 
 // Matriz para armazenar os desenhos da matriz de LEDs
 uint padrao_led[4][LED_COUNT] = {
-    {0, 0, 0, 0, 0,
-     0, 1, 1, 1, 0,
-     0, 1, 1, 1, 0,
-     0, 1, 1, 1, 0,
-     0, 0, 0, 0, 0,
-    }, // Semáforo Verde
-    {0, 0, 0, 0, 0,
-     0, 2, 2, 2, 0,
-     0, 2, 2, 2, 0,
-     0, 2, 2, 2, 0,
-     0, 0, 0, 0, 0,
-    }, // Semáforo Amarelo
-    {0, 0, 0, 0, 0,
-     0, 3, 3, 3, 0,
-     0, 3, 3, 3, 0,
-     0, 3, 3, 3, 0,
-     0, 0, 0, 0, 0,
-    }, // Semáforo Vermelh0
+    {0, 0, 1, 0, 0,
+     0, 1, 2, 1, 0,
+     1, 2, 2, 2, 1,
+     0, 1, 2, 1, 0,
+     0, 0, 1, 0, 0,
+    }, // Perigo
     {0, 0, 0, 0, 0,
      0, 0, 0, 0, 0,
      0, 0, 0, 0, 0,
@@ -88,11 +78,9 @@ void display_desenho(uint8_t desenho){
     for (int i = 0; i < LED_COUNT; i++){
         // Define a cor do LED de acordo com o padrão
         if (padrao_led[desenho][ordem[24 - i]] == 1){
-            valor_led = matrix_rgb(0, 10, 0); // Verde
+            valor_led = matrix_rgb(20, 0, 0); // Vermelho
         } else if (padrao_led[desenho][ordem[24 - i]] == 2){
-            valor_led = matrix_rgb(10, 10, 0); // Amarelo
-        } else if (padrao_led[desenho][ordem[24 - i]] == 3){
-            valor_led = matrix_rgb(10, 0, 0); // Vermelho
+            valor_led = matrix_rgb(20, 20, 0); // Amarelo
         } else{
             valor_led = matrix_rgb(0, 0, 0); // Desliga o LED
         }
@@ -110,6 +98,10 @@ typedef struct
 } joystick_data_t;
 
 QueueHandle_t xQueueJoystickData;
+QueueHandle_t bQueueLedAlerta;
+QueueHandle_t bQueueBuzzerAlerta;
+QueueHandle_t bQueueMatrizAlerta;
+QueueHandle_t bQueueDisplayAlerta;
 
 void vJoystickTask(void *params)
 {
@@ -118,6 +110,7 @@ void vJoystickTask(void *params)
     adc_init();
 
     joystick_data_t joydata;
+    bool alerta;
 
     while (true)
     {
@@ -128,8 +121,21 @@ void vJoystickTask(void *params)
         adc_select_input(1); // GPIO 27 = ADC1
         joydata.x_pos = adc_read();
         joydata.x_pos = ((joydata.x_pos - 16) / max_value_joy) * 100; // Converte o valor do eixo x para a faixa de 0 a 100
-
+        
         xQueueSend(xQueueJoystickData, &joydata, 0); // Envia o valor do joystick para a fila
+
+        // Verifica se os limites estão acima
+        if (joydata.y_pos > 80 || joydata.x_pos > 70){
+            alerta = true;
+        } else{
+            alerta = false;
+        }
+
+        xQueueSend(bQueueDisplayAlerta, &alerta, 0);
+        xQueueSend(bQueueLedAlerta, &alerta, 0);
+        xQueueSend(bQueueBuzzerAlerta, &alerta, 0);
+        xQueueSend(bQueueMatrizAlerta, &alerta, 0);
+
         vTaskDelay(pdMS_TO_TICKS(100));              // 10 Hz de leitura
     }
 }
@@ -148,16 +154,24 @@ void vDisplayTask(void *params)
     ssd1306_send_data(&ssd);
 
     joystick_data_t joydata;
+    bool alerta = false;
     bool cor = true;
     while (true)
     {
         if (xQueueReceive(xQueueJoystickData, &joydata, portMAX_DELAY) == pdTRUE)
         {
             // Mensagem para mostrar no display
-            char vol[8];
-            char nivel[8];
-            sprintf(vol, "%d%%", joydata.x_pos);
-            sprintf(nivel, "%d%%", joydata.y_pos);
+            char vol[20];
+            char nivel[20];
+            if(xQueueReceive(bQueueDisplayAlerta, &alerta, portMAX_DELAY) == pdTRUE){
+                if (alerta){
+                    sprintf(vol, "Alerta: %d%%", joydata.x_pos);
+                    sprintf(nivel, "Alerta: %d%%", joydata.y_pos);
+                } else{
+                    sprintf(vol, "%d%%", joydata.x_pos);
+                    sprintf(nivel, "%d%%", joydata.y_pos);
+                }
+            } 
 
             ssd1306_fill(&ssd, cor);                        // Limpa a tela
             ssd1306_rect(&ssd, 3, 3, 122, 58, false, true); // Desenha um retângulo
@@ -171,63 +185,68 @@ void vDisplayTask(void *params)
     }
 }
 
-void vVerificaNivel(){
-    // Verifica se o volume de chuva esta acima de 80 ou se o nivel da agua esta acima de 70
-    joystick_data_t joydata;
-    
+
+void vLedTask(void *params)
+{
+    gpio_init(LED_RED);
+    gpio_set_dir(LED_RED, GPIO_OUT);
+
+    bool alerta;
     while (true){
-        if (xQueueReceive(xQueueJoystickData, &joydata, portMAX_DELAY) == pdTRUE){
-            
-        }
-    }
-
-}
-
-void vLedGreenTask(void *params)
-{
-    gpio_set_function(LED_GREEN, GPIO_FUNC_PWM);   // Configura GPIO como PWM
-    uint slice = pwm_gpio_to_slice_num(LED_GREEN); // Obtém o slice de PWM
-    pwm_set_wrap(slice, 100);                     // Define resolução (0–100)
-    pwm_set_chan_level(slice, PWM_CHAN_B, 0);     // Duty inicial
-    pwm_set_enabled(slice, true);                 // Ativa PWM
-
-    joystick_data_t joydata;
-    while (true)
-    {
-        if (xQueueReceive(xQueueJoystickData, &joydata, portMAX_DELAY) == pdTRUE)
-        {
-            // Brilho proporcional ao desvio do centro
-            int16_t desvio_centro = (int16_t)joydata.x_pos - 2000;
-            if (desvio_centro < 0)
-                desvio_centro = -desvio_centro;
-            uint16_t pwm_value = (desvio_centro * 100) / 2048;
-            pwm_set_chan_level(slice, PWM_CHAN_B, pwm_value);
+        if (xQueueReceive(bQueueLedAlerta, &alerta, portMAX_DELAY) == pdTRUE){
+            if (alerta){
+                gpio_put(LED_RED, 1);
+            } else{
+                gpio_put(LED_RED, 0);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(50)); // Atualiza a cada 50ms
     }
 }
 
-void vLedBlueTask(void *params)
-{
-    gpio_set_function(LED_BLUE, GPIO_FUNC_PWM);   // Configura GPIO como PWM
-    uint slice = pwm_gpio_to_slice_num(LED_BLUE); // Obtém o slice de PWM
-    pwm_set_wrap(slice, 100);                     // Define resolução (0–100)
-    pwm_set_chan_level(slice, PWM_CHAN_A, 0);     // Duty inicial
-    pwm_set_enabled(slice, true);                 // Ativa PWM
+void vMatrizTask(void *params){
+    pio = pio0; 
+    uint offset = pio_add_program(pio, &animacao_matriz_program);
+    sm = pio_claim_unused_sm(pio, true);
+    animacao_matriz_program_init(pio, sm, offset, MATRIZ_PIN);
 
-    joystick_data_t joydata;
-    while (true)
-    {
-        if (xQueueReceive(xQueueJoystickData, &joydata, portMAX_DELAY) == pdTRUE)
-        {
-            // Brilho proporcional ao desvio do centro
-            int16_t desvio_centro = (int16_t)joydata.y_pos - 2048;
-            if (desvio_centro < 0)
-                desvio_centro = -desvio_centro;
-            uint16_t pwm_value = (desvio_centro * 100) / 2048;
-            pwm_set_chan_level(slice, PWM_CHAN_A, pwm_value);
+    bool alerta;
+
+    while (true){
+        if (xQueueReceive(bQueueMatrizAlerta, &alerta, portMAX_DELAY) == pdTRUE){
+            if (alerta){
+                // Liga com o padrão 0
+                display_desenho(0);
+            } else{
+                // Desliga
+                display_desenho(1);
+            }
         }
-        vTaskDelay(pdMS_TO_TICKS(50)); // Atualiza a cada 50ms
+
+        // Lógica para atualizar a matriz de LEDs
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void vBuzzerTask(void *params){
+    // Configuração do buzzer
+    gpio_set_function(BUZZER_A, GPIO_FUNC_PWM);
+    uint slice_num = pwm_gpio_to_slice_num(BUZZER_A); // Obtém o slice correspondente
+    pwm_set_clkdiv(slice_num, 125); // Define o divisor de clock
+    pwm_set_wrap(slice_num, 1000);  // Define o valor máximo do PWM
+    pwm_set_enabled(slice_num, true);
+
+    bool alerta;
+    while (true){
+        if (xQueueReceive(bQueueBuzzerAlerta, &alerta, portMAX_DELAY) == pdTRUE){
+            if (alerta){
+                pwm_set_gpio_level(BUZZER_A, 100);
+                vTaskDelay(pdMS_TO_TICKS(100));
+            } else{
+               pwm_set_gpio_level(BUZZER_A, 0);
+               vTaskDelay(pdMS_TO_TICKS(50)); // Atualiza a cada 50ms
+            }
+        }
     }
 }
 
@@ -252,12 +271,18 @@ int main()
 
     // Cria a fila para compartilhamento de valor do joystick
     xQueueJoystickData = xQueueCreate(5, sizeof(joystick_data_t));
+    bQueueDisplayAlerta = xQueueCreate(5, sizeof(bool));
+    bQueueLedAlerta = xQueueCreate(5, sizeof(bool));
+    bQueueBuzzerAlerta = xQueueCreate(5, sizeof(bool));
+    bQueueMatrizAlerta = xQueueCreate(5, sizeof(bool));
 
     // Criação das tasks
     xTaskCreate(vJoystickTask, "Joystick Task", 256, NULL, 1, NULL);
     xTaskCreate(vDisplayTask, "Display Task", 512, NULL, 1, NULL);
-    xTaskCreate(vLedGreenTask, "LED red Task", 256, NULL, 1, NULL);
-    xTaskCreate(vLedBlueTask, "LED blue Task", 256, NULL, 1, NULL);
+    xTaskCreate(vLedTask, "LED Task", 256, NULL, 1, NULL);
+    xTaskCreate(vMatrizTask, "Matriz Task", 256, NULL, 1, NULL);
+    xTaskCreate(vBuzzerTask, "Buzzer Task", 256, NULL, 1, NULL);
+
     // Inicia o agendador
     vTaskStartScheduler();
     panic_unsupported();
