@@ -125,7 +125,7 @@ void vJoystickTask(void *params)
         xQueueSend(xQueueJoystickData, &joydata, 0); // Envia o valor do joystick para a fila
 
         // Verifica se os limites estão acima
-        if (joydata.y_pos > 80 || joydata.x_pos > 70){
+        if (joydata.y_pos > 70 || joydata.x_pos > 80){
             alerta = true;
         } else{
             alerta = false;
@@ -163,24 +163,31 @@ void vDisplayTask(void *params)
             // Mensagem para mostrar no display
             char vol[20];
             char nivel[20];
+            char modo[20];
             if(xQueueReceive(bQueueDisplayAlerta, &alerta, portMAX_DELAY) == pdTRUE){
+                sprintf(vol, "V. chuva: %d%%", joydata.x_pos);
+                sprintf(nivel, "N.  agua: %d%%", joydata.y_pos);
+                sprintf(modo, "Modo: %s", alerta ? "ALERTA!!" : "Normal");
                 if (alerta){
-                    sprintf(vol, "Alerta: %d%%", joydata.x_pos);
-                    sprintf(nivel, "Alerta: %d%%", joydata.y_pos);
+                    cor = !cor;
+
+                    ssd1306_fill(&ssd, cor);                        // Limpa a tela
+                    ssd1306_rect(&ssd, 3, 3, 122, 58, !cor, cor); // Desenha um retângulo
+                    ssd1306_draw_string(&ssd, vol, 8, 10); // Desenha uma string
+                    ssd1306_draw_string(&ssd, nivel, 8, 20); // Desenha uma string
+                    ssd1306_line(&ssd, 0, 32, 127, 32, true); // Desenha uma linha divisória no meio da tela
+                    ssd1306_draw_string(&ssd, modo, 8, 40); // Desenha uma string
+                    ssd1306_send_data(&ssd);
                 } else{
-                    sprintf(vol, "%d%%", joydata.x_pos);
-                    sprintf(nivel, "%d%%", joydata.y_pos);
+                    ssd1306_fill(&ssd, true);                        // Limpa a tela
+                    ssd1306_rect(&ssd, 3, 3, 122, 58, false, true); // Desenha um retângulo
+                    ssd1306_draw_string(&ssd, vol, 8, 10); // Desenha uma string
+                    ssd1306_draw_string(&ssd, nivel, 8, 20); // Desenha uma string
+                    ssd1306_line(&ssd, 0, 32, 127, 32, true); // Desenha uma linha divisória no meio da tela
+                    ssd1306_draw_string(&ssd, modo, 8, 40); // Desenha uma string
+                    ssd1306_send_data(&ssd);
                 }
             } 
-
-            ssd1306_fill(&ssd, cor);                        // Limpa a tela
-            ssd1306_rect(&ssd, 3, 3, 122, 58, false, true); // Desenha um retângulo
-            ssd1306_draw_string(&ssd, "Vol. de chuva", 8, 10); // Desenha uma string
-            ssd1306_draw_string(&ssd, vol, 8, 20); // Desenha uma string
-            ssd1306_line(&ssd, 0, 32, 127, 32, true); // Desenha uma linha divisória no meio da tela
-            ssd1306_draw_string(&ssd, "Nivel da agua", 8, 40); // Desenha uma string
-            ssd1306_draw_string(&ssd, nivel, 8, 50); // Desenha uma string
-            ssd1306_send_data(&ssd);
         }
     }
 }
@@ -200,7 +207,7 @@ void vLedTask(void *params)
                 gpio_put(LED_RED, 0);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(50)); // Atualiza a cada 50ms
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -235,17 +242,28 @@ void vBuzzerTask(void *params){
     pwm_set_clkdiv(slice_num, 125); // Define o divisor de clock
     pwm_set_wrap(slice_num, 1000);  // Define o valor máximo do PWM
     pwm_set_enabled(slice_num, true);
-
+    
     bool alerta;
+    bool som = false; // Para definir qual o som a ser tocado
     while (true){
         if (xQueueReceive(bQueueBuzzerAlerta, &alerta, portMAX_DELAY) == pdTRUE){
             if (alerta){
-                pwm_set_gpio_level(BUZZER_A, 100);
-                vTaskDelay(pdMS_TO_TICKS(100));
-            } else{
-               pwm_set_gpio_level(BUZZER_A, 0);
-               vTaskDelay(pdMS_TO_TICKS(50)); // Atualiza a cada 50ms
+                if (som){
+                    pwm_set_clkdiv(slice_num, 125); // Define o divisor de clock
+                    pwm_set_wrap(slice_num, 1000);  // Define o valor máximo do PWM
+                    pwm_set_gpio_level(BUZZER_A, 100);
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    som = !som;
+                } else{
+                    pwm_set_clkdiv(slice_num, 250); // Define o divisor de clock
+                    pwm_set_wrap(slice_num, 1000);  // Define o valor máximo do PWM
+                    pwm_set_gpio_level(BUZZER_A, 100);
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    som = !som;
+                }
             }
+            pwm_set_gpio_level(BUZZER_A, 0);
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
@@ -269,11 +287,11 @@ int main()
 
     stdio_init_all();
 
-    // Cria a fila para compartilhamento de valor do joystick
+    // Cria a fila para compartilhamento de valores
     xQueueJoystickData = xQueueCreate(5, sizeof(joystick_data_t));
     bQueueDisplayAlerta = xQueueCreate(5, sizeof(bool));
     bQueueLedAlerta = xQueueCreate(5, sizeof(bool));
-    bQueueBuzzerAlerta = xQueueCreate(5, sizeof(bool));
+    bQueueBuzzerAlerta = xQueueCreate(3, sizeof(bool));
     bQueueMatrizAlerta = xQueueCreate(5, sizeof(bool));
 
     // Criação das tasks
