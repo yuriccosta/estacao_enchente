@@ -1,16 +1,3 @@
-/*
- *  Por: Wilton Lacerda Silva
- *  Data: 10/05/2025
- *
- *  Exemplo do uso de Filas queue no FreeRTOS com Raspberry Pi Pico
- *
- *  Descrição: Leitura do valor do joystick e exibição no display OLED SSD1306
- *  com comunicação I2C. O valor do joystick é lido a cada 100ms e enviado para a fila.
- *  A task de exibição recebe os dados da fila e atualiza o display a cada 100ms.
- *  Os leds são controlados por PWM, com brilho proporcional ao desvio do joystick.
- *  O led verde controla o eixo X e o led azul controla o eixo Y.
- */
-
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 #include "hardware/adc.h"
@@ -93,11 +80,11 @@ void display_desenho(uint8_t desenho){
 
 typedef struct
 {
-    uint16_t x_pos;
-    uint16_t y_pos;
-} joystick_data_t;
+    uint16_t volume;
+    uint16_t nivel;
+} data;
 
-QueueHandle_t xQueueJoystickData;
+QueueHandle_t xQueueJoystickConvert;
 QueueHandle_t bQueueLedAlerta;
 QueueHandle_t bQueueBuzzerAlerta;
 QueueHandle_t bQueueMatrizAlerta;
@@ -109,23 +96,23 @@ void vJoystickTask(void *params)
     adc_gpio_init(ADC_JOYSTICK_X);
     adc_init();
 
-    joystick_data_t joydata;
+    data joydata;
     bool alerta;
 
     while (true)
     {
         adc_select_input(0); // GPIO 26 = ADC0
-        joydata.y_pos = adc_read();
-        joydata.y_pos = ((joydata.y_pos - 16) / max_value_joy) * 100; // Converte o valor do eixo y para a faixa de 0 a 100
+        joydata.nivel = adc_read();
+        joydata.nivel = ((joydata.nivel - 16) / max_value_joy) * 100; // Converte o valor do eixo y para a faixa de 0 a 100
 
         adc_select_input(1); // GPIO 27 = ADC1
-        joydata.x_pos = adc_read();
-        joydata.x_pos = ((joydata.x_pos - 16) / max_value_joy) * 100; // Converte o valor do eixo x para a faixa de 0 a 100
+        joydata.volume = adc_read();
+        joydata.volume = ((joydata.volume - 16) / max_value_joy) * 100; // Converte o valor do eixo x para a faixa de 0 a 100
         
-        xQueueSend(xQueueJoystickData, &joydata, 0); // Envia o valor do joystick para a fila
+        xQueueSend(xQueueJoystickConvert, &joydata, 0); // Envia o valor do joystick para a fila
 
         // Verifica se os limites estão acima
-        if (joydata.y_pos > 70 || joydata.x_pos > 80){
+        if (joydata.nivel > 70 || joydata.volume > 80){
             alerta = true;
         } else{
             alerta = false;
@@ -153,20 +140,20 @@ void vDisplayTask(void *params)
     ssd1306_config(&ssd);
     ssd1306_send_data(&ssd);
 
-    joystick_data_t joydata;
+    data joydata;
     bool alerta = false;
     bool cor = true;
     while (true)
     {
-        if (xQueueReceive(xQueueJoystickData, &joydata, portMAX_DELAY) == pdTRUE)
+        if (xQueueReceive(xQueueJoystickConvert, &joydata, portMAX_DELAY) == pdTRUE)
         {
             // Mensagem para mostrar no display
             char vol[20];
             char nivel[20];
             char modo[20];
             if(xQueueReceive(bQueueDisplayAlerta, &alerta, portMAX_DELAY) == pdTRUE){
-                sprintf(vol, "V. chuva: %d%%", joydata.x_pos);
-                sprintf(nivel, "N.  agua: %d%%", joydata.y_pos);
+                sprintf(vol, "V. chuva: %d%%", joydata.volume);
+                sprintf(nivel, "N.  agua: %d%%", joydata.nivel);
                 sprintf(modo, "Modo: %s", alerta ? "ALERTA!!" : "Normal");
                 if (alerta){
                     cor = !cor;
@@ -269,26 +256,12 @@ void vBuzzerTask(void *params){
 }
 
 
-// Modo BOOTSEL com botão B
-#include "pico/bootrom.h"
-#define botaoB 6
-void gpio_irq_handler(uint gpio, uint32_t events)
-{
-    reset_usb_boot(0, 0);
-}
-
 int main()
 {
-    // Ativa BOOTSEL via botão
-    gpio_init(botaoB);
-    gpio_set_dir(botaoB, GPIO_IN);
-    gpio_pull_up(botaoB);
-    gpio_set_irq_enabled_with_callback(botaoB, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
-
     stdio_init_all();
 
     // Cria a fila para compartilhamento de valores
-    xQueueJoystickData = xQueueCreate(5, sizeof(joystick_data_t));
+    xQueueJoystickConvert = xQueueCreate(5, sizeof(data));
     bQueueDisplayAlerta = xQueueCreate(5, sizeof(bool));
     bQueueLedAlerta = xQueueCreate(5, sizeof(bool));
     bQueueBuzzerAlerta = xQueueCreate(3, sizeof(bool));
